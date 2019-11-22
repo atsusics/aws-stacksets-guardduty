@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Configure the AWSCloudFormationStackSetAdministrationRole to enable use of AWS CloudFormation StackSets.
+
+Parameters:
+  RoleSuffix:
+    Type: String
+    Description: IAM Role Suffix.CamelCase highly reccomend. ex) When RoleSuffix is SecurityAccount, AWSCloudFormationStackSetAdministrationRoleForSecurityAccount
+
+
+Resources:
+  AdministrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub AWSCloudFormationStackSetAdministrationRoleFor${RoleSuffix}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: cloudformation.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: !Sub AssumeRole-AWSCloudFormationStackSetExecutionRoleFor${RoleSuffix}
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - sts:AssumeRole
+            Resource:
+            - !Sub "arn:aws:iam::*:role/AWSCloudFormationStackSetExecutionRoleFor${RoleSuffix}"

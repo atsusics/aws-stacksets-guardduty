@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  'enable guardduty and set alert'
+Parameters:
+  SlackWebhookUrl:
+    Type: String
+    Default: 'https://hooks.slack.com/services/XXXXXXXXX/XXXXXXXX/XXXXXXXXXXXXXXXXXXXXX'
+  SlackMentionId:
+    Type: String
+  SlackMentionName:
+    Type: String
+
+Resources:
+  LambdaFunctionNotifyAlertFromGuardDuty:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: 'index.lambda_handler'
+      Runtime: 'python3.7'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import urllib.request
+
+          def get_severity_level(severity, sre_mention):
+              # ref: http://docs.aws.amazon.com/guardduty/latest/ug/guardduty_findings.html#guardduty_findings-severity
+              if severity == 0.0:
+                  level = {'label': 'Information', 'color': 'good', 'mention': ''}
+              elif 0.1 <= severity <= 3.9:
+                  level = {'label': 'Low', 'color': 'warning', 'mention': ''}
+              elif 4.0 <= severity <= 6.9:
+                  level = {'label': 'Medium', 'color': 'warning', 'mention': sre_mention}
+              elif 7.0 <= severity <= 8.9:
+                  level = {'label': 'High', 'color': 'danger', 'mention': sre_mention}
+              elif 9.0 <= severity <= 10.0:
+                  level = {'label': 'Critical', 'color': 'danger', 'mention': sre_mention}
+              else:
+                  level = {'label': 'Unknown', 'color': '#666666', 'mention': ''}
+              return level
+
+          def format_message(data, sre_mention):
+              account_id     = data['detail']['accountId']
+              region         = data['detail']['region']
+              severity       = data['detail']['severity']
+              title          = data['detail']['title']
+              description    = data['detail']['description']
+              type           = data['detail']['type']
+              severity_level = get_severity_level(severity, sre_mention)
+
+              payload = {
+                  'username': 'GuardDuty',
+                  'text': '{}  GuardDuty Finding in {}'.format(severity_level['mention'], region),
+                  'icon_emoji': ':aws:',
+                  'attachments': [
+                      {
+                          'fallback': 'Detailed information on GuardDuty Finding.',
+                          'color': severity_level['color'],
+                          'title': title,
+                          'text': description,
+                          'fields': [
+                              {
+                                  'title': 'Account ID',
+                                  'value': account_id,
+                                  'short': True
+                              },
+                              {
+                                  'title': 'Severity',
+                                  'value': severity_level['label'],
+                                  'short': True
+                              },
+                              {
+                                  'title': 'Type',
+                                  'value': type,
+                                  'short': False
+                              }
+                          ]
+                      }
+                  ]
+              }
+              return payload
+
+          def notify_slack(url, payload):
+              data = json.dumps(payload).encode('utf-8')
+              method = 'POST'
+              headers = {'Content-Type': 'application/json'}
+              request = urllib.request.Request(url, data = data, method = method, headers = headers)
+              with urllib.request.urlopen(request) as response:
+                  return response.read().decode('utf-8')
+
+          def lambda_handler(event, context):
+              slack_webhook_url   = os.getenv('SLACK_WEBHOOK_URL')
+              slack_mention_id    = os.getenv('SLACK_MENTION_ID')
+              slack_mention_name  = os.getenv('SLACK_MENTION_NAME')
+              sre_mention         = '<!subteam^%s|%s>' % (slack_mention_id, slack_mention_name)
+              payload             = format_message(event, sre_mention)
+              response            = notify_slack(slack_webhook_url, payload)
+              return response
+      MemorySize: 128
+      Timeout: 60
+      Environment:
+        Variables:
+          SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
+          SLACK_MENTION_ID: !Ref SlackMentionId
+          SLACK_MENTION_NAME: !Ref SlackMentionName
+      Role: !GetAtt IAMRoleNotifyAlertFromGuardDuty.Arn
+
+  IAMRoleNotifyAlertFromGuardDuty:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2008-10-17'
+        Statement:
+        - Effect: 'Allow'
+          Principal:
+            Service: 'lambda.amazonaws.com'
+          Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  LambdaPermissionNotifyAlertFromGuardDuty:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref LambdaFunctionNotifyAlertFromGuardDuty
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt EventsRuleNotifyAlertFromGuardDutySchedule.Arn
+
+  EventsRuleNotifyAlertFromGuardDutySchedule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: 'Alert to slack when find threats by GuardDuty'
+      EventPattern: |
+        {
+          'source': [
+            'aws.guardduty'
+          ],
+          'detail-type': [
+            'GuardDuty Finding'
+          ],
+          'detail': {
+            'severity': [4.0,4.1,4.2,4.3,4.4,4.5,4.6,4.7,4.8,4.9,5.0,5.1,5.2,5.3,5.4,5.5,5.6,5.7,5.8,5.9,6.0,6.1,6.2,6.3,6.4,6.5,6.6,6.7,6.8,6.9,7.0,7.1,7.2,7.3,7.4,7.5,7.6,7.7,7.8,7.9,8.0,8.1,8.2,8.3,8.4,8.5,8.6,8.7,8.8,8.9,9.0,9.1,9.2,9.3,9.4,9.5,9.6,9.7,9.8,9.9,10.0,4,5,6,7,8,9,10]
+
+          }
+        }
+      Targets:
+      - Arn: !GetAtt LambdaFunctionNotifyAlertFromGuardDuty.Arn
+        Id: 'Slackbot'
+
+  IAMRoleLambdaExecutionNotifyAlertFromGuardDuty:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: 'Allow'
+          Principal:
+            Service: 'events.amazonaws.com'
+          Action: 'sts:AssumeRole'
